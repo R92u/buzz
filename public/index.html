@@ -119,6 +119,19 @@
     50%{box-shadow:0 0 60px rgba(255,255,255,.75),inset 0 0 36px rgba(255,255,255,.14);}
   }
 
+  .live-input{
+    width:100%;background:rgba(255,255,255,.03);border:1px dashed rgba(255,255,255,.28);
+    color:#fff;font-family:'Rajdhani';font-weight:600;font-size:18px;letter-spacing:1.5px;
+    padding:14px 18px;border-radius:10px;outline:none;cursor:not-allowed;min-height:54px;
+    display:flex;align-items:center;justify-content:center;text-align:center;word-break:break-word;
+  }
+  .live-input.empty{color:rgba(255,255,255,.25);}
+  .caret{
+    display:inline-block;width:2px;height:20px;background:#fff;margin-left:3px;
+    box-shadow:0 0 8px var(--glow);animation:blink 1s step-end infinite;vertical-align:-3px;
+  }
+  @keyframes blink{50%{opacity:0;}}
+  .locked-note{font-size:11px;letter-spacing:1.5px;color:var(--dim);text-transform:uppercase;font-family:'Orbitron';}
   .answer-box,.review-box{width:100%;max-width:440px;display:flex;flex-direction:column;gap:14px;align-items:center;}
   .answer-input{width:100%;}
   .review-text{width:100%;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;padding:20px;font-size:20px;font-weight:600;text-align:center;word-break:break-word;}
@@ -205,6 +218,7 @@ function connect(){
       case 'lobby':     S.lobby=m.lobby; S.isHost=(m.lobby.hostId===S.playerId); renderRoom(); break;
       case 'left':      goHome(); break;
       case 'kicked':    goHome(); setError(m.reason || 'Лобби закрыто'); break;
+      case 'draft':     paintDraft(m.text); break;   // живая печать — без перерисовки
       case 'error':     setError(m.message); break;
     }
   };
@@ -216,6 +230,29 @@ function connect(){
   };
   ws.onerror = ()=> ws.close();
 }
+let draftTimer = null, pendingDraft = null;
+function sendDraft(text){
+  pendingDraft = text;
+  if(draftTimer) return;                 // троттлинг, чтобы не спамить сокет
+  draftTimer = setTimeout(()=>{
+    draftTimer = null;
+    send('typing', {text: pendingDraft});
+  }, 65);
+}
+
+/** Рисуем чужой черновик, НЕ трогая остальной DOM (фокус и анимации на месте) */
+function paintDraft(text){
+  const node = document.getElementById('liveDraft');
+  if(!node) return;
+  if(!text){
+    node.classList.add('empty');
+    node.innerHTML = 'ждём первую букву<span class="caret"></span>';
+  } else {
+    node.classList.remove('empty');
+    node.innerHTML = esc(text) + '<span class="caret"></span>';
+  }
+}
+
 function send(type, payload={}){
   if(ws && ws.readyState === 1) ws.send(JSON.stringify({type, ...payload}));
 }
@@ -237,7 +274,7 @@ function goHome(){
 function buildHome(){
   $('#app').innerHTML = `
     <div class="topbar">
-      <div class="brand">BUZZ<small>КОСМИЧЕСКАЯ ИГРА-БАЗЕР</small></div>
+      <div></div>
       <div class="conn" id="conn"></div>
     </div>
     <div class="wrap fade-in">
@@ -328,7 +365,7 @@ function renderList(){
 function buildRoom(){
   $('#app').innerHTML = `
     <div class="topbar">
-      <div class="brand">BUZZ<small>КОСМИЧЕСКАЯ ИГРА-БАЗЕР</small></div>
+      <div></div>
       <div style="display:flex;align-items:center;gap:16px;">
         <div class="conn" id="conn"></div>
         <div class="code-chip" id="copyCode">КОД: ${esc(S.code)}</div>
@@ -359,8 +396,11 @@ function buildRoom(){
 function renderRoom(){
   const l = S.lobby;
   if(!l || S.screen !== 'room') return;
-  const sig = JSON.stringify(l);
-  if(sig === lastRoomSig) return;   // состояние не менялось — не сбрасываем фокус в поле ввода
+  // draftText намеренно исключён: он меняется на каждой букве и перерисовка
+  // сбрасывала бы фокус у печатающего. Черновик обновляется точечно в paintDraft().
+  const {draftText, ...rest} = l;
+  const sig = JSON.stringify(rest);
+  if(sig === lastRoomSig) return;
   lastRoomSig = sig;
 
   /* --- счёт --- */
@@ -427,15 +467,21 @@ function renderRoom(){
         const t = inp.value.trim();
         if(t) send('submitAnswer', {text:t});
       };
+      // живая трансляция печати остальным (не чаще ~15 раз в секунду)
+      inp.oninput = ()=> sendDraft(inp.value);
       inp.onkeydown = e=>{ if(e.key==='Enter') doSend(); };
       box.append(inp, btn('Отправить','',doSend));
       g.appendChild(box);
       inp.focus();
     } else {
-      add(`<div class="status-line">${esc(l.buzzedByName)} отвечает...</div>`);
-      add(`<div class="idle-icon">✎</div>`);
+      // все остальные видят, КАК он печатает, но писать не могут
+      add(`<div class="status-line">${esc(l.buzzedByName)} печатает...</div>`);
+      const box = el(`<div class="answer-box"></div>`);
+      box.appendChild(el(`<div class="live-input empty" id="liveDraft"></div>`));
+      box.appendChild(el(`<div class="locked-note">🔒 Поле заблокировано</div>`));
+      g.appendChild(box);
+      paintDraft(l.draftText || '');
       if(S.isHost) g.appendChild(btn('Новый раунд','btn-ghost',()=>send('newRound')));
-      else add(`<div class="hint">Кнопка заблокирована на этот раунд</div>`);
     }
     return;
   }

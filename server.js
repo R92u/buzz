@@ -82,6 +82,7 @@ function lobbyView(lobby) {
     buzzedBy: lobby.buzzedBy,
     buzzedByName: lobby.buzzedBy ? lobby.players.get(lobby.buzzedBy)?.name ?? null : null,
     submittedText: lobby.submittedText,
+    draftText: lobby.draftText,
     players: [...lobby.players.values()]
       .map(p => ({ id: p.id, name: p.name, score: p.score }))
       .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)),
@@ -104,6 +105,14 @@ function send(ws, type, payload = {}) {
 function broadcastLobby(lobby) {
   const view = lobbyView(lobby);
   for (const p of lobby.players.values()) send(p.ws, 'lobby', { lobby: view });
+}
+
+/** Живая печать: шлём черновик всем, кроме самого печатающего */
+function broadcastDraft(lobby, authorId) {
+  for (const p of lobby.players.values()) {
+    if (p.id === authorId) continue;
+    send(p.ws, 'draft', { text: lobby.draftText });
+  }
 }
 
 /** Все, кто сейчас в главном меню, получают свежий список лобби */
@@ -129,6 +138,7 @@ function removeFromLobby(ws) {
   if (lobby.buzzedBy === ws.playerId) {
     lobby.buzzedBy = null;
     lobby.submittedText = null;
+    lobby.draftText = '';
     lobby.roundState = lobby.status === 'playing' ? 'idle' : 'idle';
   }
 
@@ -187,6 +197,7 @@ wss.on('connection', (ws) => {
           roundState: 'idle',
           buzzedBy: null,
           submittedText: null,
+          draftText: '',
           createdAt: Date.now(),
         };
         newLobby.players.set(ws.playerId, { id: ws.playerId, name, score: 0, ws });
@@ -233,6 +244,7 @@ wss.on('connection', (ws) => {
         lobby.roundState = 'idle';
         lobby.buzzedBy = null;
         lobby.submittedText = null;
+        lobby.draftText = '';
         broadcastLobby(lobby);
         broadcastLobbyList();
         break;
@@ -242,6 +254,7 @@ wss.on('connection', (ws) => {
         lobby.roundState = 'voting';
         lobby.buzzedBy = null;
         lobby.submittedText = null;
+        lobby.draftText = '';
         broadcastLobby(lobby);
         break;
 
@@ -250,6 +263,7 @@ wss.on('connection', (ws) => {
         lobby.roundState = 'idle';
         lobby.buzzedBy = null;
         lobby.submittedText = null;
+        lobby.draftText = '';
         broadcastLobby(lobby);
         break;
 
@@ -262,6 +276,7 @@ wss.on('connection', (ws) => {
         lobby.roundState = 'idle';
         lobby.buzzedBy = null;
         lobby.submittedText = null;
+        lobby.draftText = '';
         broadcastLobby(lobby);
         break;
       }
@@ -278,6 +293,7 @@ wss.on('connection', (ws) => {
 
         lobby.buzzedBy = ws.playerId;
         lobby.roundState = 'buzzed';
+        lobby.draftText = '';
         broadcastLobby(lobby);
         break;
       }
@@ -290,8 +306,22 @@ wss.on('connection', (ws) => {
         if (!text) return;
 
         lobby.submittedText = text;
+        lobby.draftText = '';
         lobby.roundState = 'reviewing';
         broadcastLobby(lobby);
+        break;
+      }
+
+      /* ---------- ЖИВАЯ ПЕЧАТЬ ---------- */
+      // Только тот, кто нажал баззер, может слать черновик.
+      // Остальные видят его текст в реальном времени, но писать не могут.
+      case 'typing': {
+        if (!lobby) return;
+        if (lobby.roundState !== 'buzzed') return;
+        if (lobby.buzzedBy !== ws.playerId) return;   // защита: чужой ввод игнорируется
+
+        lobby.draftText = String(msg.text || '').slice(0, 200);
+        broadcastDraft(lobby, ws.playerId);
         break;
       }
     }
